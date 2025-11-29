@@ -1,19 +1,32 @@
-async function findDuplicates() {
+function getDomain(url) {
+  try {
+    const urlObj = new URL(url);
+    return urlObj.hostname;
+  } catch (e) {
+    return url;
+  }
+}
+
+async function findDuplicatesByDomain() {
   const tabs = await chrome.tabs.query({});
-  const urlMap = new Map();
+  const domainMap = new Map();
   
   tabs.forEach(tab => {
-    const url = tab.url;
-    if (!urlMap.has(url)) {
-      urlMap.set(url, []);
+    if (tab.url.startsWith('chrome://') || tab.url.startsWith('about:')) {
+      return;
     }
-    urlMap.get(url).push(tab);
+    
+    const domain = getDomain(tab.url);
+    if (!domainMap.has(domain)) {
+      domainMap.set(domain, []);
+    }
+    domainMap.get(domain).push(tab);
   });
   
   const duplicates = new Map();
-  urlMap.forEach((tabList, url) => {
+  domainMap.forEach((tabList, domain) => {
     if (tabList.length > 1) {
-      duplicates.set(url, tabList);
+      duplicates.set(domain, tabList);
     }
   });
   
@@ -21,7 +34,7 @@ async function findDuplicates() {
 }
 
 async function displayDuplicates() {
-  const duplicates = await findDuplicates();
+  const duplicates = await findDuplicatesByDomain();
   const tabsList = document.getElementById('tabsList');
   const noDuplicates = document.getElementById('noDuplicates');
   const duplicatesCount = document.getElementById('duplicatesCount');
@@ -47,7 +60,7 @@ async function displayDuplicates() {
   noDuplicates.style.display = 'none';
   closeAllBtn.disabled = false;
   
-  duplicates.forEach((tabList, url) => {
+  duplicates.forEach((tabList, domain) => {
     const groupDiv = document.createElement('div');
     groupDiv.className = 'tab-group';
     
@@ -62,14 +75,23 @@ async function displayDuplicates() {
     };
     
     const headerText = document.createElement('span');
-    headerText.textContent = `${tabList.length} copies`;
+    headerText.textContent = `${domain} - ${tabList.length} вкладок`;
+    
+    const closeDomainBtn = document.createElement('button');
+    closeDomainBtn.className = 'close-domain-btn';
+    closeDomainBtn.textContent = 'Закрыть дубликаты';
+    closeDomainBtn.title = 'Закрыть все вкладки этого домена, кроме первой';
+    closeDomainBtn.addEventListener('click', async () => {
+      await closeDomainDuplicates(domain);
+    });
     
     headerDiv.appendChild(favicon);
     headerDiv.appendChild(headerText);
+    headerDiv.appendChild(closeDomainBtn);
     groupDiv.appendChild(headerDiv);
     
-    tabList.slice(1).forEach(tab => {
-      const tabItem = createTabItem(tab);
+    tabList.forEach((tab, index) => {
+      const tabItem = createTabItem(tab, index === 0);
       groupDiv.appendChild(tabItem);
     });
     
@@ -77,7 +99,7 @@ async function displayDuplicates() {
   });
 }
 
-function createTabItem(tab) {
+function createTabItem(tab, isFirst = false) {
   const tabDiv = document.createElement('div');
   tabDiv.className = 'tab-item';
   
@@ -105,11 +127,19 @@ function createTabItem(tab) {
   const closeBtn = document.createElement('button');
   closeBtn.className = 'close-btn';
   closeBtn.textContent = '×';
-  closeBtn.title = 'Close tab';
-  closeBtn.addEventListener('click', async () => {
-    await chrome.tabs.remove(tab.id);
-    displayDuplicates();
-  });
+  closeBtn.title = 'Закрыть вкладку';
+  
+  if (isFirst) {
+    closeBtn.disabled = true;
+    closeBtn.title = 'Эта вкладка остается открытой';
+    closeBtn.classList.add('disabled');
+    tabDiv.classList.add('protected');
+  } else {
+    closeBtn.addEventListener('click', async () => {
+      await chrome.tabs.remove(tab.id);
+      displayDuplicates();
+    });
+  }
   
   tabDiv.appendChild(favicon);
   tabDiv.appendChild(infoDiv);
@@ -118,14 +148,27 @@ function createTabItem(tab) {
   return tabDiv;
 }
 
+async function closeDomainDuplicates(domain) {
+  const duplicates = await findDuplicatesByDomain();
+  const domainTabs = duplicates.get(domain);
+  
+  if (domainTabs && domainTabs.length > 1) {
+    const tabsToClose = domainTabs.slice(1).map(tab => tab.id);
+    await chrome.tabs.remove(tabsToClose);
+    displayDuplicates();
+  }
+}
+
 async function closeAllDuplicates() {
-  const duplicates = await findDuplicates();
+  const duplicates = await findDuplicatesByDomain();
   const tabsToClose = [];
   
   duplicates.forEach(tabList => {
-    tabList.slice(1).forEach(tab => {
-      tabsToClose.push(tab.id);
-    });
+    if (tabList.length > 1) {
+      tabList.slice(1).forEach(tab => {
+        tabsToClose.push(tab.id);
+      });
+    }
   });
   
   if (tabsToClose.length > 0) {
